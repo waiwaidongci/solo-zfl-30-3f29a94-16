@@ -272,6 +272,82 @@ test("梯度因子高值控制出水上限：GF高 越小出水时间越长", ()
   assert.ok(loose.ttsSec >= buhlmann.ttsSec);
 });
 
+// ---------- 结束深度与减压上限的安全判断 ----------
+
+test("结束深度浅于减压上限：标记违规（不限于回到水面）", () => {
+  const r = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 30, duration: 3 },
+      { type: "bottom", depth: 30, duration: 25 },
+      { type: "ascent", depth: 9, duration: 2.5 }
+    ]
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.endDepth, 9);
+  assert.ok(r.ceilingAtEnd > r.endDepth, `上限 ${r.ceilingAtEnd} 应深于结束深度 9m`);
+  assert.equal(r.ceilingViolation, true, "浅于上限必须标记违规");
+});
+
+test("结束深度深于上限：不标记违规", () => {
+  const r = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 30, duration: 3 },
+      { type: "bottom", depth: 30, duration: 23 },
+      { type: "ascent", depth: 9, duration: 2.5 }
+    ]
+  });
+  assert.equal(r.ok, true);
+  assert.ok(r.ceilingAtEnd < r.endDepth);
+  assert.equal(r.ceilingViolation, false);
+});
+
+test("结束深度恰好等于上限（5cm 容差内）：不标记违规", () => {
+  const r = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 30, duration: 3 },
+      { type: "bottom", depth: 30, duration: 24 },
+      { type: "ascent", depth: 9, duration: 2.5 }
+    ]
+  });
+  assert.equal(r.ok, true);
+  assert.ok(Math.abs(r.ceilingAtEnd - r.endDepth) <= 0.05,
+    `上限 ${r.ceilingAtEnd.toFixed(3)} 应约等于结束深度 9m`);
+  assert.equal(r.ceilingViolation, false, "恰好等于上限不应误报");
+});
+
+test("结束深度不在 3m 层时，剩余停留从结束深度继续且不更深", () => {
+  const r = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 30, duration: 3 },
+      { type: "bottom", depth: 30, duration: 23 },
+      { type: "ascent", depth: 10, duration: 2 }
+    ]
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.endDepth, 10);
+  assert.ok(r.ceilingAtEnd > 9 && r.ceilingAtEnd <= 10, `上限 ${r.ceilingAtEnd} 应在 9–10m 之间`);
+  assert.equal(r.stops[0].depth, 10, "首个停留必须从结束深度 10m 继续，而非跳到 9m 层");
+  for (const s of r.stops) {
+    assert.ok(s.depth <= 10 + 1e-9, `停留 ${s.depth}m 不得深于结束深度 10m`);
+  }
+});
+
+test("任意结束深度：停留深度均不超过结束深度", () => {
+  for (const endD of [4, 5.5, 7, 10, 11.5, 13, 16.2, 20]) {
+    const r = Deco.reviewProfile({
+      segments: [
+        { type: "descent", depth: 30, duration: 3 },
+        { type: "bottom", depth: 30, duration: 20 },
+        { type: "ascent", depth: endD, duration: Math.max(1, (30 - endD) / 9) }
+      ]
+    });
+    assert.equal(r.ok, true, `end ${endD}`);
+    for (const s of r.stops) {
+      assert.ok(s.depth <= endD + 1e-9, `结束于 ${endD}m 时出现更深停留 ${s.depth}m`);
+    }
+  }
+});
+
 // ---------- 剖面结构语义 ----------
 
 test("多分段：浅停增加组织负荷时 TTS 与停留必须随之增长", () => {

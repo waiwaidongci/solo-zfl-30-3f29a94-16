@@ -208,9 +208,9 @@
       }
     }
 
-    // 第一阶段：从最大深度直达首停（首停以下 gf 恒为 gfLow，上限不会超过身位）
-    if (firstStop > 1e-9 && depth > firstStop + 1e-9) ascendTo(firstStop);
-    // 第二阶段：停留阶梯，逐 3 m 上行直至水面
+    // 停留阶梯：自结束深度逐 3m 下行直至水面。
+    // 不停到比结束深度更深的层；结束深度不在 3m 停留层时，先在结束深度等待，
+    // 直至允许进入下一层——剩余停留始终从结束深度继续。
     while (depth > 1e-9) {
       var nextStop = depth <= STOP_STEP_M + 1e-9 ? 0
         : Math.max(0, Math.floor((depth - 1e-6) / STOP_STEP_M) * STOP_STEP_M);
@@ -414,6 +414,8 @@
       maxDepth: maxDepth,
       endDepth: depth,
       ceilingAtEnd: endInfo.ceiling,
+      // 结束位置浅于减压上限（容差 5 cm）：无论是否回到水面都必须报警
+      ceilingViolation: endInfo.ceiling > depth + 0.05,
       totalDiveMin: totalMin,
       tissuesEnd: tissues.slice(),
       saturationEnd: satEnd,

@@ -83,6 +83,30 @@ function segInput(page, rowIdx, field) {
   await page.waitForSelector("#dWarning", { state: "hidden" });
   check("回升到 10m 结束后警告消失", await page.locator("#dWarning").isHidden());
 
+  // --- 结束深度与减压上限的三种关系 ---
+  // 浅于上限：30m 停留 25min 后升到 9m 结束（上限 ≈9.15m）
+  await page.locator("#dReset").click();
+  await page.waitForSelector("#dOk:not([hidden])");
+  await segInput(page, 1, ".seg-dur").fill("25");
+  await segInput(page, 2, ".seg-depth").fill("9");
+  await segInput(page, 2, ".seg-dur").fill("2.5");
+  await page.waitForSelector("#dWarning:not([hidden])");
+  const warnShallow = await page.locator("#dWarning").textContent();
+  check("结束深度浅于上限时明确报警（不限于水面）", /浅于当前减压上限/.test(warnShallow), warnShallow);
+  check("报警为严重级别样式", await page.locator("#dWarning.severe").count() === 1);
+  check("报警时仍展示剩余减压方案", await page.locator("#dOk").isVisible());
+  const stopDepths = await page.locator("#dStops .stop-row b").allTextContents();
+  check("剩余停留不比结束深度 9m 更深",
+    stopDepths.every(t => !/ m$/.test(t) || parseFloat(t) <= 9), stopDepths.join(","));
+  // 恰好等于上限：底部 24min（上限 ≈9.03m，5cm 容差内）
+  await segInput(page, 1, ".seg-dur").fill("24");
+  await page.waitForFunction(() => document.getElementById("dWarning").hidden);
+  check("结束深度恰好等于上限时不报警", await page.locator("#dWarning").isHidden());
+  // 深于上限：底部 23min（上限 ≈8.89m < 9m）
+  await segInput(page, 1, ".seg-dur").fill("23");
+  await page.waitForFunction(() => document.getElementById("dWarning").hidden);
+  check("结束深度深于上限时不报警", await page.locator("#dWarning").isHidden());
+
   // --- 恢复示例 ---
   await page.locator("#dReset").click();
   await page.waitForSelector("#dOk:not([hidden])");
@@ -144,6 +168,12 @@ function segInput(page, rowIdx, field) {
   await mob.locator("#dReset").click();
   await mob.waitForSelector("#dOk:not([hidden])");
   check("移动端结果区完整（饱和度图）", (await mob.locator(".tissue-row").count()) === 16);
+  // 移动端同样对"浅于上限"报警
+  await mob.locator('.deco-seg[data-idx="1"] .seg-dur').fill("25");
+  await mob.locator('.deco-seg[data-idx="2"] .seg-depth').fill("9");
+  await mob.locator('.deco-seg[data-idx="2"] .seg-dur').fill("2.5");
+  await mob.waitForSelector("#dWarning:not([hidden])");
+  check("移动端浅于上限同样报警", /浅于当前减压上限/.test(await mob.locator("#dWarning").textContent()));
   await mob.close();
 
   await browser.close();

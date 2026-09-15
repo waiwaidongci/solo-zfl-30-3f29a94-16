@@ -103,14 +103,20 @@
     $("dError").hidden = true;
     $("dOk").hidden = false;
 
-    // 安全警告：按录入剖面出水时仍有减压上限
+    // 安全报警：剖面结束时当前深度浅于减压上限（任何深度都判，不限于水面）
     var warns = [];
-    if (r.endDepth <= 0.01 && r.ceilingAtEnd > 0.05) {
-      warns.push("按当前剖面出水时减压上限为 " + r.ceilingAtEnd.toFixed(1) +
-        " m，超出梯度因子允许范围，直接出水不安全。");
+    if (r.ceilingViolation) {
+      if (r.endDepth <= 0.01) {
+        warns.push("按当前剖面出水时减压上限为 " + r.ceilingAtEnd.toFixed(1) +
+          " m，超出梯度因子允许范围，直接出水不安全。");
+      } else {
+        warns.push("剖面结束于 " + r.endDepth.toFixed(1) + " m，浅于当前减压上限 " +
+          r.ceilingAtEnd.toFixed(1) + " m——该位置已突破减压上限，剖面不安全。");
+      }
     }
     var warnBox = $("dWarning");
     warnBox.hidden = warns.length === 0;
+    warnBox.classList.toggle("severe", warns.length > 0);
     warnBox.innerHTML = warns.map(function (w) { return "<div>⚠ " + w + "</div>"; }).join("");
 
     // 概览卡片
