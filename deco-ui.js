@@ -11,7 +11,7 @@
   var DEFAULT_SEGMENTS = [
     { type: "descent", depth: 30, duration: 3 },
     { type: "bottom", depth: 30, duration: 17 },
-    { type: "ascent", depth: 0, duration: 6 }
+    { type: "ascent", depth: 10, duration: 2 }
   ];
   var DEFAULT_ENV = { altitude: 0, waterTemp: 20, salinity: "salt", workload: "moderate", gfLow: 30, gfHigh: 85 };
   var segments = cloneSegments(DEFAULT_SEGMENTS);
@@ -103,14 +103,11 @@
     $("dError").hidden = true;
     $("dOk").hidden = false;
 
-    // 安全警告：出水仍有减压上限 / 剖面未回水面
+    // 安全警告：按录入剖面出水时仍有减压上限
     var warns = [];
     if (r.endDepth <= 0.01 && r.ceilingAtEnd > 0.05) {
       warns.push("按当前剖面出水时减压上限为 " + r.ceilingAtEnd.toFixed(1) +
         " m，超出梯度因子允许范围，直接出水不安全。");
-    }
-    if (r.endDepth > 0.01) {
-      warns.push("剖面结束于 " + r.endDepth.toFixed(1) + " m（未回到水面），以下为自最大深度返回水面的要求。");
     }
     var warnBox = $("dWarning");
     warnBox.hidden = warns.length === 0;
@@ -122,14 +119,21 @@
     $("dCeiling").textContent = r.ceilingAtEnd.toFixed(1) + " m";
     $("dControl").textContent = "舱室 " + (r.controlling + 1) + "（半时 " + HT[r.controlling] + " 分）";
     $("dEnvInfo").textContent =
-      "TTS 自离开最大深度 " + r.maxDepth.toFixed(1) + " m 起算 · 减压上升 9 m/min · 水面气压 " +
+      "剖面结束于 " + (r.endDepth <= 0.01 ? "水面" : r.endDepth.toFixed(1) + " m") +
+      " · 最大深度 " + r.maxDepth.toFixed(1) + " m · TTS 自剖面结束状态起算 · 减压上升 9 m/min · 水面气压 " +
       r.env.pSurf.toFixed(3) + " bar（" + (r.env.salinity === "fresh" ? "淡水" : "海水") +
       "）· 剖面总时长 " + r.totalDiveMin + " min";
 
     // 减压停留
     var stopsEl = $("dStops");
     if (!r.stops.length) {
-      stopsEl.innerHTML = '<div class="muted">无需减压停留：可按 ≤9 m/min 直接升至水面。</div>';
+      if (r.endDepth <= 0.01 && r.ceilingAtEnd > 0.05) {
+        stopsEl.innerHTML = '<div class="muted">已在水面：出水时减压义务未清除（见上方警告），模型无法在水面继续安排停留。</div>';
+      } else if (r.endDepth <= 0.01) {
+        stopsEl.innerHTML = '<div class="muted">无需减压停留：剖面已安全回到水面。</div>';
+      } else {
+        stopsEl.innerHTML = '<div class="muted">无需减压停留：可按 ≤9 m/min 直接升至水面。</div>';
+      }
     } else {
       stopsEl.innerHTML = r.stops.map(function (s) {
         return '<div class="stop-row"><b>' + s.depth + " m</b><span>" + fmtTime(s.seconds) + "</span></div>";
@@ -180,7 +184,13 @@
   $("dAddSeg").addEventListener("click", function () {
     segments = readSegments();
     if (segments.length >= Deco.LIMITS.maxSegments) return;
-    segments.push({ type: "ascent", depth: 0, duration: 5 });
+    // 新段类型与末段深度保持方向一致：在水面则下潜，在深度则上升至水面
+    var lastDepth = segments.length ? segments[segments.length - 1].depth : 0;
+    if (!isFinite(lastDepth) || lastDepth <= 0) {
+      segments.push({ type: "descent", depth: 18, duration: 2 });
+    } else {
+      segments.push({ type: "ascent", depth: 0, duration: 5 });
+    }
     renderSegments();
     recalc();
   });

@@ -173,8 +173,10 @@
     var firstStop = firstStopDepth(startTissues, gfLow, ctx); // 固定锚点
 
     function noConv(msg) {
-      throw DecoError("NO_CONVERGENCE",
-        "减压求解不收敛（" + msg + "），超出迭代上限，请检查剖面深度与梯度因子设置", null);
+      var e = DecoError("NO_CONVERGENCE",
+        "减压方案在 " + (Math.round(depth * 10) / 10) + " m 处不收敛：" + msg + "，请检查剖面深度与梯度因子设置", null);
+      e.stopDepth = Math.round(depth * 100) / 100;
+      throw e;
     }
     function addWait(d, s) {
       if (s <= 0) return;
@@ -286,6 +288,7 @@
     }
     var totalMin = 0;
     var normSegs = [];
+    var curDepth = 0;
     for (var v = 0; v < segs.length; v++) {
       var sg = segs[v] || {};
       var no = v + 1;
@@ -306,9 +309,24 @@
       if (sDur <= 0) {
         throw DecoError("OUT_OF_RANGE", "第" + no + "段（" + SEGMENT_TYPES[sg.type] + "）：时长为 0，无法形成有效剖面", v);
       }
+      if (sDur * 60 < 1) {
+        throw DecoError("OUT_OF_RANGE", "第" + no + "段（" + SEGMENT_TYPES[sg.type] + "）：时长不足 1 秒，无法逐秒模拟", v);
+      }
       if (sDur > LIMITS.maxSegmentMin) {
         throw DecoError("OUT_OF_RANGE", "第" + no + "段（" + SEGMENT_TYPES[sg.type] + "）：单段时长超出模型上限 " + LIMITS.maxSegmentMin + " min", v);
       }
+      // 分段类型必须与深度方向一致；停留段不得移动深度
+      var curShown = Math.round(curDepth * 10) / 10;
+      if (sg.type === "descent" && sDepth <= curDepth + 1e-9) {
+        throw DecoError("TYPE_MISMATCH", "第" + no + "段（下潜）：目标深度 " + sDepth + " m 必须深于当前深度 " + curShown + " m", v);
+      }
+      if (sg.type === "ascent" && sDepth >= curDepth - 1e-9) {
+        throw DecoError("TYPE_MISMATCH", "第" + no + "段（上升）：目标深度 " + sDepth + " m 必须浅于当前深度 " + curShown + " m", v);
+      }
+      if (sg.type === "bottom" && Math.abs(sDepth - curDepth) > 1e-9) {
+        throw DecoError("TYPE_MISMATCH", "第" + no + "段（停留）：停留段深度不得由 " + curShown + " m 移动至 " + sDepth + " m", v);
+      }
+      curDepth = sDepth;
       totalMin += sDur;
       if (totalMin > LIMITS.maxTotalMin) {
         throw DecoError("OUT_OF_RANGE", "剖面总时长超出模型上限 " + LIMITS.maxTotalMin + " min", v);
@@ -347,7 +365,6 @@
     // ---- 逐秒模拟录入剖面 ----
     var depth = 0;
     var maxDepth = 0;
-    var snapshot = tissues.slice(); // 最后一次处于最大深度时的组织状态（减压计算起点）
     var peak = saturation(tissues, 0, ctx);
     for (var idx = 0; idx < normSegs.length; idx++) {
       var seg = normSegs[idx];
@@ -368,19 +385,23 @@
         var nxt = from + (to - from) * (s2 + 1) / durSec;
         stepSecond(tissues, depth, nxt, ctx);
         depth = nxt;
-        if (depth > maxDepth + 1e-9) {
-          maxDepth = depth;
-          snapshot = tissues.slice();
-        } else if (Math.abs(depth - maxDepth) <= 1e-9) {
-          snapshot = tissues.slice(); // 同一最大深度上取最后时刻
-        }
+        if (depth > maxDepth) maxDepth = depth;
         var sat = saturation(tissues, depth, ctx);
         for (var p = 0; p < N_COMP; p++) if (sat[p] > peak[p]) peak[p] = sat[p];
       }
     }
 
-    // ---- 减压方案：自最后一次离开最大深度的状态起算 ----
-    var sched = computeSchedule(maxDepth, snapshot, gfLow, gfHigh, ctx, opts);
+    // ---- 减压方案：从所有已录入分段结束后的真实深度与组织状态起算 ----
+    var sched;
+    try {
+      sched = computeSchedule(depth, tissues, gfLow, gfHigh, ctx, opts);
+    } catch (e) {
+      if (e && e.__deco && e.code === "NO_CONVERGENCE") {
+        e.segmentIndex = normSegs.length - 1; // 方案自最后一段结束状态起算
+        e.message = "第" + normSegs.length + "段结束后：" + e.message;
+      }
+      throw e;
+    }
     var endInfo = ceilingInfo(tissues, depth, gfLow, gfHigh, ctx);
     var satEnd = saturation(tissues, depth, ctx);
     var controlling = 0;
@@ -417,7 +438,12 @@
       return r;
     } catch (e) {
       if (e && e.__deco) {
-        return { ok: false, error: { code: e.code, message: e.message, segmentIndex: e.segmentIndex } };
+        return { ok: false, error: {
+          code: e.code,
+          message: e.message,
+          segmentIndex: e.segmentIndex,
+          stopDepth: e.stopDepth != null ? e.stopDepth : null
+        } };
       }
       throw e;
     }

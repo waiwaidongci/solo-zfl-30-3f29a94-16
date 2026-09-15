@@ -35,7 +35,8 @@ function segInput(page, rowIdx, field) {
   check("TTS 已计算", /\d/.test(tts0), tts0);
   const stops0 = await page.locator("#dStops").textContent();
   check("减压停留已列出（含 3m 停留）", /3 m/.test(stops0), stops0);
-  check("出水仍有上限的安全警告出现", await page.locator("#dWarning").isVisible());
+  check("默认示例结束于 10m，无出水警告", await page.locator("#dWarning").isHidden());
+  check("信息行标明自剖面结束状态起算", /剖面结束于 10\.0 m/.test(await page.locator("#dEnvInfo").textContent()));
   check("16 舱室饱和度条形图渲染", (await page.locator(".tissue-row").count()) === 16);
 
   // --- 非法剖面 1：时间倒序 ---
@@ -50,10 +51,10 @@ function segInput(page, rowIdx, field) {
   // --- 非法剖面 2：上升过快 ---
   await page.locator("#dReset").click();
   await page.waitForSelector("#dOk:not([hidden])");
-  await segInput(page, 2, ".seg-dur").fill("1"); // 30m 用 1 分钟升完 = 30 m/min
+  await segInput(page, 2, ".seg-dur").fill("1"); // 30→10m 用 1 分钟 = 20 m/min
   await page.waitForSelector("#dError:not([hidden])");
   const errText2 = await page.locator("#dError").textContent();
-  check("上升过快被拒绝并提示速率", /上升速率 30\.0 m\/min/.test(errText2), errText2);
+  check("上升过快被拒绝并提示速率", /上升速率 20\.0 m\/min/.test(errText2), errText2);
   check("错误定位到第 3 段", /第3段/.test(errText2), errText2);
 
   // --- 非法剖面 3：超出模型范围 ---
@@ -62,6 +63,25 @@ function segInput(page, rowIdx, field) {
   await page.waitForSelector("#dError:not([hidden])");
   const errText3 = await page.locator("#dError").textContent();
   check("超深被拒绝并提示范围", /超出模型范围/.test(errText3), errText3);
+
+  // --- 非法剖面 4：分段类型与深度方向不符 ---
+  await page.locator("#dReset").click();
+  await page.waitForSelector("#dOk:not([hidden])");
+  await segInput(page, 0, ".seg-type").selectOption("ascent"); // 0→30m 标成上升
+  await page.waitForSelector("#dError:not([hidden])");
+  const errText4 = await page.locator("#dError").textContent();
+  check("类型与深度方向不符被拒绝", /必须浅于当前深度/.test(errText4), errText4);
+  check("类型错配定位到第 1 段并高亮", await page.locator('.deco-seg[data-idx="0"].seg-error').count() === 1);
+
+  // --- 直接出水违反减压上限的警告 ---
+  await page.locator("#dReset").click();
+  await page.waitForSelector("#dOk:not([hidden])");
+  await segInput(page, 2, ".seg-depth").fill("0"); // 30→0m 两分钟升完，出水仍有上限
+  await page.waitForSelector("#dWarning:not([hidden])");
+  check("直接出水触发减压上限警告", /直接出水不安全/.test(await page.locator("#dWarning").textContent()));
+  await segInput(page, 2, ".seg-depth").fill("10");
+  await page.waitForSelector("#dWarning", { state: "hidden" });
+  check("回升到 10m 结束后警告消失", await page.locator("#dWarning").isHidden());
 
   // --- 恢复示例 ---
   await page.locator("#dReset").click();
@@ -87,10 +107,10 @@ function segInput(page, rowIdx, field) {
   check("修改梯度因子高值后 TTS 即时变化", ttsGf !== tts0, `${tts0} → ${ttsGf}`);
   await page.locator("#dGfHigh").fill("85");
   await page.waitForFunction(t => document.getElementById("dTts").textContent === t, tts0);
-  await segInput(page, 1, ".seg-depth").fill("35");
+  await segInput(page, 1, ".seg-dur").fill("22"); // 停留 17→22 min（改深度会触发类型校验，见类型错配场景）
   await page.waitForFunction(t => document.getElementById("dTts").textContent !== t, tts0);
-  check("修改分段深度后 TTS 即时变化", (await page.locator("#dTts").textContent()) !== tts0);
-  await segInput(page, 1, ".seg-depth").fill("30");
+  check("修改停留时长后 TTS 即时变化", (await page.locator("#dTts").textContent()) !== tts0);
+  await segInput(page, 1, ".seg-dur").fill("17");
 
   // --- 分段增删 ---
   const rowsBefore = await page.locator(".deco-seg").count();

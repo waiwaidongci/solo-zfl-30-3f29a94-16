@@ -17,18 +17,16 @@ const NO_STOP = {
   ],
   gf: { low: 1, high: 1 }
 };
-const DECO_40 = {
+const DECO_40 = { // 结束于 40m 底部，方案自底部起算
   segments: [
     { type: "descent", depth: 40, duration: 3 },
-    { type: "bottom", depth: 40, duration: 22 },
-    { type: "ascent", depth: 0, duration: 5 }
+    { type: "bottom", depth: 40, duration: 22 }
   ]
 };
-const DEMO_30 = {
+const DEMO_30 = { // 结束于 30m 底部
   segments: [
     { type: "descent", depth: 30, duration: 3 },
-    { type: "bottom", depth: 30, duration: 17 },
-    { type: "ascent", depth: 0, duration: 6 }
+    { type: "bottom", depth: 30, duration: 17 }
   ]
 };
 
@@ -124,7 +122,7 @@ test("超出模型范围：深度、海拔、水温、梯度因子、空剖面�
     [{ segments: [{ type: "bottom", depth: 10, duration: "abc" }] }, /时长无效/],
     [{ segments: [{ type: "hover", depth: 10, duration: 10 }] }, /未知分段类型/],
     [{ segments: [{ type: "descent", depth: 30, duration: 0.4 }] }, /下降速率/], // 75 m/min
-    [{ segments: [{ type: "bottom", depth: 10, duration: 10 }], repetitive: { depth: 25, bottomTime: 30, surfaceInterval: -1 } }, /水面间隔/]
+    [{ segments: [{ type: "descent", depth: 10, duration: 1 }], repetitive: { depth: 25, bottomTime: 30, surfaceInterval: -1 } }, /水面间隔/]
   ];
   for (const [input, re] of cases) {
     const r = Deco.reviewProfile(input);
@@ -147,11 +145,14 @@ test("超出模型范围的分段定位到具体行", () => {
 
 // ---------- 拒绝路径：迭代不收敛 ----------
 
-test("迭代不收敛：停留求解超过上限时拒绝", () => {
+test("迭代不收敛：拒绝并指出所属分段与当前停留深度", () => {
   const r = Deco.reviewProfile(DECO_40, { maxStopMinutes: 0.02 });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, "NO_CONVERGENCE");
-  assert.match(r.error.message, /不收敛/);
+  assert.equal(r.error.segmentIndex, DECO_40.segments.length - 1, "应定位到最后一段（方案起点）");
+  assert.ok(typeof r.error.stopDepth === "number" && r.error.stopDepth > 0, "应给出不收敛的停留深度");
+  assert.match(r.error.message, /第2段结束后/);
+  assert.match(r.error.message, /m 处不收敛/);
 });
 
 test("默认迭代上限下正常剖面不会误报不收敛", () => {
@@ -162,11 +163,24 @@ test("默认迭代上限下正常剖面不会误报不收敛", () => {
 
 // ---------- 减压方案结构 ----------
 
-test("免减压剖面：无停留，TTS 等于直接上升时间", () => {
+test("免减压剖面回到水面：无停留，TTS 为 0", () => {
   const r = Deco.reviewProfile(NO_STOP);
   assert.equal(r.ok, true);
   assert.equal(r.stops.length, 0);
   assert.equal(r.firstStopDepth, 0);
+  assert.equal(r.ttsSec, 0, "已安全回到水面，无剩余出水时间");
+});
+
+test("剖面结束于底部：无停留时 TTS 等于直接上升时间", () => {
+  const r = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 18, duration: 2 },
+      { type: "bottom", depth: 18, duration: 28 }
+    ],
+    gf: { low: 1, high: 1 }
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.stops.length, 0);
   assert.equal(r.ttsSec, Math.round(18 / (9 / 60))); // 18m @ 9m/min
 });
 
@@ -260,28 +274,54 @@ test("梯度因子高值控制出水上限：GF高 越小出水时间越长", ()
 
 // ---------- 剖面结构语义 ----------
 
-test("多层级剖面：减压方案从最后一次离开最大深度的状态起算", () => {
-  const direct = Deco.reviewProfile({
+test("多分段：浅停增加组织负荷时 TTS 与停留必须随之增长", () => {
+  const base = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 40, duration: 3 },
+      { type: "bottom", depth: 40, duration: 20 },
+      { type: "ascent", depth: 20, duration: 2 }
+    ]
+  });
+  const withStay = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 40, duration: 3 },
+      { type: "bottom", depth: 40, duration: 20 },
+      { type: "ascent", depth: 20, duration: 2 },
+      { type: "bottom", depth: 20, duration: 60 }
+    ]
+  });
+  assert.equal(base.ok, true);
+  assert.equal(withStay.ok, true);
+  assert.equal(base.endDepth, 20);
+  assert.equal(withStay.endDepth, 20);
+  assert.ok(withStay.tissuesEnd[15] > base.tissuesEnd[15], "20m 浅停应让慢舱室继续吸氮");
+  assert.ok(withStay.ttsSec > base.ttsSec,
+    `浅停增负荷后 TTS ${withStay.ttsSec} 必须大于 ${base.ttsSec}，不得保持不变`);
+  assert.notDeepEqual(withStay.stops, base.stops, "停留方案必须随浅停改变");
+});
+
+test("深潜后回升：方案自回升后的结束状态继续计算", () => {
+  const atBottom = Deco.reviewProfile({
     segments: [
       { type: "descent", depth: 40, duration: 3 },
       { type: "bottom", depth: 40, duration: 20 }
     ]
   });
-  const multi = Deco.reviewProfile({
+  const ascended = Deco.reviewProfile({
     segments: [
       { type: "descent", depth: 40, duration: 3 },
       { type: "bottom", depth: 40, duration: 20 },
-      { type: "ascent", depth: 20, duration: 2 },
-      { type: "bottom", depth: 20, duration: 10 }
+      { type: "ascent", depth: 15, duration: 2.5 }
     ]
   });
-  assert.equal(multi.ok, true);
-  assert.equal(multi.maxDepth, 40);
-  assert.equal(multi.ttsSec, direct.ttsSec, "TTS 只取决于离开 40m 时的组织状态");
-  assert.deepEqual(multi.stops, direct.stops);
+  assert.equal(ascended.ok, true);
+  assert.equal(ascended.endDepth, 15);
+  assert.ok(ascended.ttsSec > 0, "回升到 15m 后仍需减压");
+  assert.ok(ascended.ttsSec < atBottom.ttsSec, "已回升并部分排氮，TTS 应小于停留在 40m 的方案");
+  assert.ok(ascended.stops[0].depth <= 15, "首停不深于结束深度");
 });
 
-test("剖面结束于深度：正常出结果，TTS 仍从最大深度起算", () => {
+test("剖面结束于深度：方案自结束状态起算", () => {
   const r = Deco.reviewProfile({
     segments: [
       { type: "descent", depth: 25, duration: 3 },
@@ -292,6 +332,65 @@ test("剖面结束于深度：正常出结果，TTS 仍从最大深度起算", (
   assert.equal(r.ok, true);
   assert.equal(r.endDepth, 10);
   assert.ok(r.ttsSec > 0);
+  const atBottom = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 25, duration: 3 },
+      { type: "bottom", depth: 25, duration: 15 }
+    ]
+  });
+  assert.ok(r.ttsSec < atBottom.ttsSec, "已上升的部分不应重复计时");
+});
+
+// ---------- 分段类型与时长校验 ----------
+
+test("分段类型必须与深度方向一致", () => {
+  const cases = [
+    [[{ type: "descent", depth: 30, duration: 3 }, { type: "descent", depth: 20, duration: 2 }], /必须深于当前深度/],
+    [[{ type: "descent", depth: 30, duration: 3 }, { type: "ascent", depth: 40, duration: 2 }], /必须浅于当前深度/],
+    [[{ type: "descent", depth: 30, duration: 3 }, { type: "bottom", depth: 20, duration: 5 }], /停留段深度不得由 .* 移动至/],
+    [[{ type: "ascent", depth: 0, duration: 1 }], /必须浅于当前深度/],
+    [[{ type: "descent", depth: 30, duration: 3 }, { type: "descent", depth: 30, duration: 2 }], /必须深于当前深度/]
+  ];
+  for (const [segments, re] of cases) {
+    const r = Deco.reviewProfile({ segments });
+    assert.equal(r.ok, false, JSON.stringify(segments));
+    assert.equal(r.error.code, "TYPE_MISMATCH", JSON.stringify(segments));
+    assert.equal(r.error.segmentIndex, segments.length - 1, JSON.stringify(segments));
+    assert.match(r.error.message, re, JSON.stringify(segments));
+  }
+});
+
+test("首段在水面停留合法，随后可正常下潜", () => {
+  const r = Deco.reviewProfile({
+    segments: [
+      { type: "bottom", depth: 0, duration: 5 },
+      { type: "descent", depth: 18, duration: 2 },
+      { type: "bottom", depth: 18, duration: 20 },
+      { type: "ascent", depth: 0, duration: 4 }
+    ],
+    gf: { low: 1, high: 1 }
+  });
+  assert.equal(r.ok, true);
+});
+
+test("短于一秒的分段被拒绝，恰好一秒合法", () => {
+  const r = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 10, duration: 1 },
+      { type: "bottom", depth: 10, duration: 0.005 } // 0.3 秒
+    ]
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, "OUT_OF_RANGE");
+  assert.equal(r.error.segmentIndex, 1);
+  assert.match(r.error.message, /不足 1 秒/);
+  const ok = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 10, duration: 1 },
+      { type: "bottom", depth: 10, duration: 1 / 60 } // 恰好 1 秒
+    ]
+  });
+  assert.equal(ok.ok, true);
 });
 
 test("结果确定性：相同输入两次计算完全一致", () => {
