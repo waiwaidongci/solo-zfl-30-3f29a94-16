@@ -103,8 +103,16 @@
     $("dError").hidden = true;
     $("dOk").hidden = false;
 
-    // 安全报警：剖面结束时当前深度浅于减压上限（任何深度都判，不限于水面）
+    // 安全报警：途中越限（逐秒检出，回潜也不掩盖）+ 结束状态越限
     var warns = [];
+    if (r.profileViolation) {
+      var pv = r.profileViolation;
+      warns.push("第" + (pv.segmentIndex + 1) + "段（" + TYPE_NAMES[pv.segmentType] + "）：剖面在 " +
+        pv.depth.toFixed(1) + " m 处突破减压上限 " + pv.ceiling.toFixed(1) + " m（入水第 " +
+        pv.timeSec + " 秒，累计越限 " + pv.violatedSec + " 秒）——途中越限即使随后回潜也不安全。");
+      var vRow = segList.querySelector('.deco-seg[data-idx="' + pv.segmentIndex + '"]');
+      if (vRow) vRow.classList.add("seg-error");
+    }
     if (r.ceilingViolation) {
       if (r.endDepth <= 0.01) {
         warns.push("按当前剖面出水时减压上限为 " + r.ceilingAtEnd.toFixed(1) +

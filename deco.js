@@ -163,6 +163,16 @@
     return true;
   }
 
+  // 固定锚点的减压上限：anchor 为本潜最大义务首停深度，GF 随深度插值
+  function ceilingWithAnchor(tissues, depth, anchor, gfLow, gfHigh, ctx) {
+    var gf = gfAtDepth(depth, anchor, gfLow, gfHigh);
+    var maxP = -Infinity;
+    for (var i = 0; i < N_COMP; i++) {
+      maxP = Math.max(maxP, ceilingPressure(tissues[i], gf, A_N2[i], B_N2[i]));
+    }
+    return Math.max(0, (maxP - ctx.pSurf) / ctx.barPerM);
+  }
+
   // 从 startDepth / startTissues 起，按 3 m 步进求减压方案：停留 + 总出水时间（秒）
   function computeSchedule(startDepth, startTissues, gfLow, gfHigh, ctx, opts) {
     var tissues = startTissues.slice();
@@ -362,10 +372,17 @@
       for (var i0 = 0; i0 < N_COMP; i0++) tissues[i0] = pInit;
     }
 
-    // ---- 逐秒模拟录入剖面 ----
+    // ---- 逐秒模拟录入剖面：途中逐秒比对当前深度与减压上限 ----
     var depth = 0;
     var maxDepth = 0;
     var peak = saturation(tissues, 0, ctx);
+    // 越限判定锚点：本潜迄今最大减压义务首停深度（与减压方案同口径的梯度因子插值），
+    // 正常上升与合规减压方案不误报；重复潜水入水残留属初始状态，不算途中突破。
+    var anchor = firstStopDepth(tissues, gfLow, ctx);
+    var violated = ceilingWithAnchor(tissues, 0, anchor, gfLow, gfHigh, ctx) > 0.05;
+    var firstViolation = null;
+    var violatedSec = 0;
+    var elapsed = 0;
     for (var idx = 0; idx < normSegs.length; idx++) {
       var seg = normSegs[idx];
       var from = depth, to = seg.depth;
@@ -385,9 +402,24 @@
         var nxt = from + (to - from) * (s2 + 1) / durSec;
         stepSecond(tissues, depth, nxt, ctx);
         depth = nxt;
+        elapsed++;
         if (depth > maxDepth) maxDepth = depth;
         var sat = saturation(tissues, depth, ctx);
         for (var p = 0; p < N_COMP; p++) if (sat[p] > peak[p]) peak[p] = sat[p];
+        var aNow = firstStopDepth(tissues, gfLow, ctx);
+        if (aNow > anchor) anchor = aNow; // 锚点只增不减：本潜最大减压义务
+        var ceilNow = ceilingWithAnchor(tissues, depth, anchor, gfLow, gfHigh, ctx);
+        var isV = ceilNow > depth + 0.05;
+        if (isV) {
+          violatedSec++;
+          if (!violated && !firstViolation) {
+            firstViolation = {
+              segmentIndex: idx, segmentType: seg.type,
+              depth: depth, ceiling: ceilNow, timeSec: elapsed
+            };
+          }
+        }
+        violated = isV;
       }
     }
 
@@ -416,6 +448,15 @@
       ceilingAtEnd: endInfo.ceiling,
       // 结束位置浅于减压上限（容差 5 cm）：无论是否回到水面都必须报警
       ceilingViolation: endInfo.ceiling > depth + 0.05,
+      // 途中越限：逐秒检出的首次突破（含分段、深度、时间与累计越限秒数）
+      profileViolation: firstViolation ? {
+        segmentIndex: firstViolation.segmentIndex,
+        segmentType: firstViolation.segmentType,
+        depth: firstViolation.depth,
+        ceiling: firstViolation.ceiling,
+        timeSec: firstViolation.timeSec,
+        violatedSec: violatedSec
+      } : null,
       totalDiveMin: totalMin,
       tissuesEnd: tissues.slice(),
       saturationEnd: satEnd,
@@ -464,6 +505,7 @@
       inspiredN2: inspiredN2,
       stepSecond: stepSecond,
       ceilingInfo: ceilingInfo,
+      ceilingWithAnchor: ceilingWithAnchor,
       firstStopDepth: firstStopDepth,
       clearedToDepth: clearedToDepth,
       computeSchedule: computeSchedule,

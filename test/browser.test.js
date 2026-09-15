@@ -18,6 +18,18 @@ function segInput(page, rowIdx, field) {
   return page.locator(`.deco-seg[data-idx="${rowIdx}"] ${field}`);
 }
 
+async function setSeg(page, idx, { type, depth, dur }) {
+  if (type) await segInput(page, idx, ".seg-type").selectOption(type);
+  if (depth != null) await segInput(page, idx, ".seg-depth").fill(String(depth));
+  if (dur != null) await segInput(page, idx, ".seg-dur").fill(String(dur));
+}
+
+async function addSeg(page, seg) {
+  await page.locator("#dAddSeg").click();
+  const idx = (await page.locator(".deco-seg").count()) - 1;
+  await setSeg(page, idx, seg);
+}
+
 (async () => {
   const browser = await chromium.launch();
 
@@ -106,6 +118,44 @@ function segInput(page, rowIdx, field) {
   await segInput(page, 1, ".seg-dur").fill("23");
   await page.waitForFunction(() => document.getElementById("dWarning").hidden);
   check("结束深度深于上限时不报警", await page.locator("#dWarning").isHidden());
+
+  // --- 途中越限后回潜：不被合规结束状态掩盖 ---
+  await page.locator("#dReset").click();
+  await page.waitForSelector("#dOk:not([hidden])");
+  await segInput(page, 1, ".seg-dur").fill("25");
+  await segInput(page, 2, ".seg-depth").fill("3");
+  await segInput(page, 2, ".seg-dur").fill("2.5"); // 急升到 3m：途中突破上限
+  await addSeg(page, { type: "descent", depth: 9, dur: 1 });   // 重新下潜
+  await addSeg(page, { type: "bottom", depth: 9, dur: 40 });   // 长时间排氮
+  await addSeg(page, { type: "ascent", depth: 0, dur: 1 });    // 结束时已合规
+  await page.waitForSelector("#dWarning:not([hidden])");
+  const warnMid = await page.locator("#dWarning").textContent();
+  check("途中越限后回潜仍明确报警", /突破减压上限/.test(warnMid), warnMid);
+  check("报警定位到越限分段（第3段 上升）", /第3段（上升）/.test(warnMid), warnMid);
+  check("报警含越限深度与上限", /\d+\.\d m 处突破减压上限 \d+\.\d m/.test(warnMid), warnMid);
+  check("越限分段行同步高亮", await page.locator('.deco-seg[data-idx="2"].seg-error').count() === 1);
+  check("报警时结果区仍展示", await page.locator("#dOk").isVisible());
+
+  // --- 持续越限：越限分段停留全程报警 ---
+  await page.locator("#dReset").click();
+  await page.waitForSelector("#dOk:not([hidden])");
+  await segInput(page, 1, ".seg-dur").fill("25");
+  await segInput(page, 2, ".seg-depth").fill("3");
+  await segInput(page, 2, ".seg-dur").fill("2.5");
+  await addSeg(page, { type: "bottom", depth: 3, dur: 5 }); // 3m 停留 5min，持续越限
+  await page.waitForSelector("#dWarning:not([hidden])");
+  const warnSustained = await page.locator("#dWarning").textContent();
+  check("持续越限报警含累计越限时长", /累计越限 \d+ 秒/.test(warnSustained), warnSustained);
+  check("持续越限时结束状态同步报警", /浅于当前减压上限|直接出水不安全/.test(warnSustained), warnSustained);
+
+  // --- 安全剖面不误报：默认示例 + 重复潜水残留 ---
+  await page.locator("#dReset").click();
+  await page.waitForSelector("#dOk:not([hidden])");
+  check("合规剖面无途中越限报警", await page.locator("#dWarning").isHidden());
+  await page.locator("#dRepEnabled").check();
+  await page.waitForFunction(() => document.getElementById("dResidual").textContent.includes("残留氮"));
+  check("重复潜水残留入水不误报途中越限", await page.locator("#dWarning").isHidden());
+  await page.locator("#dRepEnabled").uncheck();
 
   // --- 恢复示例 ---
   await page.locator("#dReset").click();

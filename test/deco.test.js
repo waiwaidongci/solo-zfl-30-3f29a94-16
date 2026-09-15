@@ -348,6 +348,81 @@ test("任意结束深度：停留深度均不超过结束深度", () => {
   }
 });
 
+// ---------- 途中减压上限逐秒检测 ----------
+
+test("途中越限后回潜：仍被检出，不被合规的结束状态掩盖", () => {
+  const r = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 30, duration: 3 },
+      { type: "bottom", depth: 30, duration: 25 },
+      { type: "ascent", depth: 3, duration: 2.5 },  // 途中突破上限
+      { type: "descent", depth: 9, duration: 1 },   // 重新下潜
+      { type: "bottom", depth: 9, duration: 40 },   // 长时间排氮
+      { type: "ascent", depth: 0, duration: 1 }
+    ]
+  });
+  assert.equal(r.ok, true);
+  assert.ok(r.profileViolation, "途中越限必须被记录");
+  assert.equal(r.profileViolation.segmentIndex, 2, "应定位到急升分段");
+  assert.equal(r.profileViolation.segmentType, "ascent");
+  assert.ok(r.profileViolation.depth < r.profileViolation.ceiling,
+    `越限点深度 ${r.profileViolation.depth} 应浅于上限 ${r.profileViolation.ceiling}`);
+  assert.ok(r.profileViolation.timeSec > 0 && r.profileViolation.violatedSec > 0);
+  assert.equal(r.ceilingViolation, false, "结束状态已合规，但途中越限不得被掩盖");
+});
+
+test("持续越限：累计越限秒数随停留增长，结束状态同步报警", () => {
+  const r = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 30, duration: 3 },
+      { type: "bottom", depth: 30, duration: 25 },
+      { type: "ascent", depth: 3, duration: 2.5 },
+      { type: "bottom", depth: 3, duration: 5 } // 5 分钟全程处于越限状态
+    ]
+  });
+  assert.ok(r.profileViolation);
+  assert.ok(r.profileViolation.violatedSec >= 200,
+    `越限秒数 ${r.profileViolation.violatedSec} 应覆盖大部分浅停时间`);
+  assert.equal(r.ceilingViolation, true, "结束时仍越限应同步标记");
+});
+
+test("安全剖面不误报途中越限", () => {
+  // 免减压剖面
+  assert.equal(Deco.reviewProfile(NO_STOP).profileViolation, null);
+  // 结束于 10m 的合规减压剖面
+  const demo = Deco.reviewProfile({
+    segments: [
+      { type: "descent", depth: 30, duration: 3 },
+      { type: "bottom", depth: 30, duration: 17 },
+      { type: "ascent", depth: 10, duration: 2 }
+    ]
+  });
+  assert.equal(demo.profileViolation, null);
+  // 重复潜水入水残留属初始状态，不得误报
+  const rep = Deco.reviewProfile({ ...DEMO_30, repetitive: { depth: 25, bottomTime: 30, surfaceInterval: 30 } });
+  assert.equal(rep.profileViolation, null, "重复潜水入水残留不得误报途中越限");
+});
+
+test("按引擎计算方案执行的减压剖面不触发误报", () => {
+  const plan = Deco.reviewProfile(DECO_40);
+  assert.ok(plan.stops.length > 0);
+  const segments = [
+    { type: "descent", depth: 40, duration: 3 },
+    { type: "bottom", depth: 40, duration: 22 }
+  ];
+  let depth = 40;
+  for (const s of plan.stops) {
+    segments.push({ type: "ascent", depth: s.depth, duration: (depth - s.depth) / 9 });
+    segments.push({ type: "bottom", depth: s.depth, duration: s.seconds / 60 });
+    depth = s.depth;
+  }
+  segments.push({ type: "ascent", depth: 0, duration: depth / 9 });
+  const r = Deco.reviewProfile({ segments });
+  assert.equal(r.ok, true, JSON.stringify(r.error));
+  assert.equal(r.profileViolation, null, "按方案逐秒执行不得误报越限");
+  assert.equal(r.ceilingViolation, false);
+});
+
 // ---------- 剖面结构语义 ----------
 
 test("多分段：浅停增加组织负荷时 TTS 与停留必须随之增长", () => {
