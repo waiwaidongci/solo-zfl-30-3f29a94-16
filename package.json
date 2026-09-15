@@ -1,0 +1,15 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "水下考古潜水记录 + 离线潜水减压剖面复核台（ZHL-16C）",
+  "scripts": {
+    "test": "node --test test/deco.test.js",
+    "test:browser": "node test/browser.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}
